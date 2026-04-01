@@ -67,3 +67,28 @@ export function recordAnswer(category: string, correct: boolean, showedWork?: bo
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
   return stats;
 }
+
+// --- DB-backed stats (for logged-in users) ---
+
+export async function getDbStats(): Promise<PracticeStats | null> {
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.stats ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveDbStats(stats: PracticeStats): Promise<void> {
+  try {
+    await fetch("/api/stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stats }),
+    });
+  } catch {
+    // Best-effort — don't block the UI
+  }
+}

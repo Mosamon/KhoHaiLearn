@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { ChevronDown } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useSession } from "next-auth/react";
+import { ChevronDown, Pencil, Keyboard } from "lucide-react";
+import DrawingCanvas from "@/components/drawing-canvas";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -20,7 +22,7 @@ import {
   type Category,
   type Problem,
 } from "@/lib/problems";
-import { recordAnswer } from "@/lib/store";
+import { recordAnswer, saveDbStats } from "@/lib/store";
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -32,17 +34,34 @@ function shuffle<T>(arr: T[]): T[] {
 }
 
 export default function PracticePage() {
+  const { data: session } = useSession();
+  // Fire-and-forget: sync latest localStorage stats to DB when logged in
+  const syncDb = useCallback((stats: ReturnType<typeof recordAnswer>) => {
+    if (session?.user?.email) saveDbStats(stats);
+  }, [session]);
+
   const [activeTab, setActiveTab] = useState<Category>("algebra");
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [hintLoading, setHintLoading] = useState(false);
   const [completed, setCompleted] = useState(0);
-  const [questionQueue] = useState<Record<Category, Problem[]>>(() => ({
-    algebra: shuffle(problems.filter((p) => p.category === "algebra")),
-    calculus: shuffle(problems.filter((p) => p.category === "calculus")),
-    probability: shuffle(problems.filter((p) => p.category === "probability")),
-    geometry: shuffle(problems.filter((p) => p.category === "geometry")),
-  }));
+  const [questionQueue, setQuestionQueue] = useState<Record<Category, Problem[]>>({
+    algebra: problems.filter((p) => p.category === "algebra"),
+    calculus: problems.filter((p) => p.category === "calculus"),
+    probability: problems.filter((p) => p.category === "probability"),
+    geometry: problems.filter((p) => p.category === "geometry"),
+  });
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    setQuestionQueue({
+      algebra: shuffle(problems.filter((p) => p.category === "algebra")),
+      calculus: shuffle(problems.filter((p) => p.category === "calculus")),
+      probability: shuffle(problems.filter((p) => p.category === "probability")),
+      geometry: shuffle(problems.filter((p) => p.category === "geometry")),
+    });
+    setReady(true);
+  }, []);
   const [queueIndex, setQueueIndex] = useState<Record<Category, number>>({
     algebra: 0,
     calculus: 0,
@@ -59,8 +78,13 @@ export default function PracticePage() {
   // Show-your-work state
   const [studentWork, setStudentWork] = useState("");
   const [showWorkInput, setShowWorkInput] = useState(false);
+  const [workMode, setWorkMode] = useState<"type" | "draw">("type");
+  const [hasDrawing, setHasDrawing] = useState(false);
   const [workAnalysis, setWorkAnalysis] = useState<string | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  // AI transcription of handwriting
+  const [transcription, setTranscription] = useState<string | null>(null);
+  const [editedTranscription, setEditedTranscription] = useState("");
 
   const currentProblem = useMemo(() => {
     const queue = questionQueue[activeTab];
@@ -71,7 +95,7 @@ export default function PracticePage() {
   const totalProblems = problems.length;
   const progressPercent = Math.min((completed / totalProblems) * 100, 100);
 
-  const hasWork = studentWork.trim().length > 0;
+  const hasWork = studentWork.trim().length > 0 || hasDrawing;
 
   const getChoiceLabel = useCallback(
     (key: string | null) => {
@@ -81,8 +105,19 @@ export default function PracticePage() {
     [currentProblem]
   );
 
-  const handleAnalyzeWork = useCallback(async () => {
+  const getDrawingDataURL = useCallback((): string | null => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const exportFn = (window as any).__drawingCanvasExport as (() => string | null) | undefined;
+    return exportFn ? exportFn() : null;
+  }, []);
+
+  const handleAnalyzeWork = useCallback(async (overrideText?: string) => {
     setAnalysisLoading(true);
+    // If re-analyzing with edited transcription, don't send image again
+    const isReAnalyze = overrideText !== undefined;
+    const drawingImage = !isReAnalyze && hasDrawing ? getDrawingDataURL() : null;
+    const textToSend = overrideText ?? (studentWork || undefined);
+
     try {
       const res = await fetch("/api/analyze-work", {
         method: "POST",
@@ -91,17 +126,22 @@ export default function PracticePage() {
           question: currentProblem.question,
           userAnswer: getChoiceLabel(selectedAnswer),
           correctAnswer: getChoiceLabel(currentProblem.answer),
-          studentWork,
+          studentWork: textToSend,
+          drawingImage: drawingImage || undefined,
         }),
       });
       const data = await res.json();
+      if (data.transcription) {
+        setTranscription(data.transcription);
+        setEditedTranscription(data.transcription);
+      }
       setWorkAnalysis(data.analysis || data.error || "ไม่สามารถวิเคราะห์ได้");
     } catch {
       setWorkAnalysis("เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
     } finally {
       setAnalysisLoading(false);
     }
-  }, [currentProblem, selectedAnswer, studentWork, getChoiceLabel]);
+  }, [currentProblem, selectedAnswer, studentWork, hasDrawing, getDrawingDataURL, getChoiceLabel]);
 
   const handleSubmit = useCallback(() => {
     if (!selectedAnswer) return;
@@ -110,7 +150,7 @@ export default function PracticePage() {
       // ถูก!
       setIsCorrect(true);
       setCompleted((c) => c + 1);
-      recordAnswer(currentProblem.category, true, hasWork);
+      syncDb(recordAnswer(currentProblem.category, true, hasWork));
     } else {
       // ผิด — เพิ่มเข้า wrongAttempts แล้วให้ลองใหม่
       setWrongAttempts((prev) => new Set(prev).add(selectedAnswer));
@@ -121,13 +161,13 @@ export default function PracticePage() {
   const handleGiveUp = useCallback(() => {
     setGaveUp(true);
     setCompleted((c) => c + 1);
-    recordAnswer(currentProblem.category, false, hasWork);
+    syncDb(recordAnswer(currentProblem.category, false, hasWork));
 
-    // Auto-analyze if student wrote work
+    // Auto-analyze if student wrote work or drew
     if (hasWork) {
-      // Need to set selectedAnswer context for analysis
       setAnalysisLoading(true);
       const lastWrong = [...wrongAttempts].pop() || selectedAnswer;
+      const drawingImage = hasDrawing ? getDrawingDataURL() : null;
       fetch("/api/analyze-work", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -135,13 +175,18 @@ export default function PracticePage() {
           question: currentProblem.question,
           userAnswer: getChoiceLabel(lastWrong),
           correctAnswer: getChoiceLabel(currentProblem.answer),
-          studentWork,
+          studentWork: studentWork || undefined,
+          drawingImage: drawingImage || undefined,
         }),
       })
         .then((res) => res.json())
-        .then((data) =>
-          setWorkAnalysis(data.analysis || data.error || "ไม่สามารถวิเคราะห์ได้")
-        )
+        .then((data) => {
+          if (data.transcription) {
+            setTranscription(data.transcription);
+            setEditedTranscription(data.transcription);
+          }
+          setWorkAnalysis(data.analysis || data.error || "ไม่สามารถวิเคราะห์ได้");
+        })
         .catch(() => setWorkAnalysis("เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง"))
         .finally(() => setAnalysisLoading(false));
     }
@@ -159,7 +204,11 @@ export default function PracticePage() {
     setHint(null);
     setStudentWork("");
     setShowWorkInput(false);
+    setWorkMode("type");
+    setHasDrawing(false);
     setWorkAnalysis(null);
+    setTranscription(null);
+    setEditedTranscription("");
   }, [activeTab]);
 
   const handleHint = useCallback(async () => {
@@ -193,8 +242,23 @@ export default function PracticePage() {
     setHint(null);
     setStudentWork("");
     setShowWorkInput(false);
+    setWorkMode("type");
+    setHasDrawing(false);
     setWorkAnalysis(null);
+    setTranscription(null);
+    setEditedTranscription("");
   };
+
+  if (!ready) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-8">
+        <div className="mb-8">
+          <h1 className="mb-2 text-3xl font-bold">ฝึกโจทย์คณิตศาสตร์</h1>
+          <p className="text-muted-foreground">กำลังเตรียมโจทย์...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
@@ -322,20 +386,59 @@ export default function PracticePage() {
                   </button>
 
                   {showWorkInput && (
-                    <div className="mt-3">
-                      <textarea
-                        value={studentWork}
-                        onChange={(e) =>
-                          setStudentWork(e.target.value.slice(0, 1000))
-                        }
-                        disabled={isFinished}
-                        rows={4}
-                        placeholder="เขียนวิธีทำของคุณที่นี่... เช่น สูตรที่ใช้ ขั้นตอนการคำนวณ"
-                        className="w-full resize-y rounded-lg border border-input bg-background px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
-                      />
-                      <p className="mt-1 text-right text-xs text-muted-foreground">
-                        {studentWork.length}/1000
-                      </p>
+                    <div className="mt-3 space-y-3">
+                      {/* Mode toggle: type vs draw */}
+                      <div className="flex gap-1 rounded-lg border border-border p-1 w-fit">
+                        <button
+                          type="button"
+                          onClick={() => setWorkMode("type")}
+                          disabled={isFinished}
+                          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                            workMode === "type"
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Keyboard className="size-3.5" />
+                          พิมพ์
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWorkMode("draw")}
+                          disabled={isFinished}
+                          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                            workMode === "draw"
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Pencil className="size-3.5" />
+                          เขียน
+                        </button>
+                      </div>
+
+                      {workMode === "type" ? (
+                        <div>
+                          <textarea
+                            value={studentWork}
+                            onChange={(e) =>
+                              setStudentWork(e.target.value.slice(0, 1000))
+                            }
+                            disabled={isFinished}
+                            rows={4}
+                            placeholder="เขียนวิธีทำของคุณที่นี่... เช่น สูตรที่ใช้ ขั้นตอนการคำนวณ"
+                            className="w-full resize-y rounded-lg border border-input bg-background px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+                          />
+                          <p className="mt-1 text-right text-xs text-muted-foreground">
+                            {studentWork.length}/1000
+                          </p>
+                        </div>
+                      ) : (
+                        <DrawingCanvas
+                          disabled={isFinished}
+                          onDrawingChange={setHasDrawing}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
@@ -417,7 +520,7 @@ export default function PracticePage() {
                         {isCorrect && hasWork && !workAnalysis && (
                           <Button
                             variant="outline"
-                            onClick={handleAnalyzeWork}
+                            onClick={() => handleAnalyzeWork()}
                             disabled={analysisLoading}
                           >
                             {analysisLoading
@@ -441,6 +544,25 @@ export default function PracticePage() {
               </CardContent>
             </Card>
 
+            {/* Full Explanation Card */}
+            {isFinished && (
+              <Card className="mb-6 border-green-500/30 bg-green-50/50">
+                <CardHeader>
+                  <CardTitle className="text-lg">
+                    📖 เฉลยวิธีทำแบบละเอียด
+                  </CardTitle>
+                  <CardDescription>
+                    ขั้นตอนการแก้โจทย์ข้อนี้แบบ step-by-step
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="whitespace-pre-wrap leading-relaxed font-mono text-sm">
+                    {currentProblem.explanation}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Work Analysis Card */}
             {workAnalysis && (
               <Card className="mb-6 border-blue-500/30 bg-blue-50/50">
@@ -452,7 +574,37 @@ export default function PracticePage() {
                     AI ตรวจวิธีทำของคุณ แล้วชี้จุดที่ควรปรับปรุง
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                  {/* Transcription section — shown when AI read handwriting */}
+                  {transcription !== null && (
+                    <div className="rounded-lg border border-blue-300/50 bg-white/60 p-4 space-y-2">
+                      <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                        🔍 AI อ่านลายมือว่า:
+                      </p>
+                      <textarea
+                        value={editedTranscription}
+                        onChange={(e) => setEditedTranscription(e.target.value)}
+                        rows={3}
+                        className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm leading-relaxed focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
+                      />
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-muted-foreground flex-1">
+                          แก้ไขได้ถ้า AI อ่านผิด แล้วกดวิเคราะห์ใหม่
+                        </p>
+                        {editedTranscription !== transcription && (
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() => handleAnalyzeWork(editedTranscription)}
+                            disabled={analysisLoading || !editedTranscription.trim()}
+                          >
+                            {analysisLoading ? "กำลังวิเคราะห์..." : "🔄 วิเคราะห์ใหม่"}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="whitespace-pre-wrap leading-relaxed">
                     {workAnalysis}
                   </div>

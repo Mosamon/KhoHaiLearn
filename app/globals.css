@@ -93,4 +93,13 @@
   html {
     @apply font-sans;
   }
+  button,
+  a,
+  [role="tab"],
+  [role="button"],
+  label,
+  select,
+  summary {
+    cursor: pointer;
+  }
 }

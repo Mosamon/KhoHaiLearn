@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Noto_Sans_Thai } from "next/font/google";
 import Link from "next/link";
+import { Providers } from "@/components/providers";
+import { AuthButton } from "@/components/auth-button";
 import "./globals.css";
 
 const notoSansThai = Noto_Sans_Thai({
@@ -23,31 +25,34 @@ export default function RootLayout({
   return (
     <html lang="th" className={`${notoSansThai.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col font-sans">
-        <header className="sticky top-0 z-50 border-b bg-white/80 backdrop-blur-sm">
-          <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-            <Link href="/" className="text-xl font-bold text-primary">
-              ขอให้ Learn
-            </Link>
-            <div className="flex items-center gap-6">
-              <Link
-                href="/practice"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                ฝึกโจทย์
+        <Providers>
+          <header className="sticky top-0 z-50 border-b bg-white/80 backdrop-blur-sm">
+            <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
+              <Link href="/" className="text-xl font-bold text-primary">
+                ขอให้ Learn
               </Link>
-              <Link
-                href="/dashboard"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Dashboard
-              </Link>
-            </div>
-          </nav>
-        </header>
-        <main className="flex-1">{children}</main>
-        <footer className="border-t py-8 text-center text-sm text-muted-foreground">
-          © 2026 ขอให้ Learn — KhoHaiLearn.com
-        </footer>
+              <div className="flex items-center gap-6">
+                <Link
+                  href="/practice"
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  ฝึกโจทย์
+                </Link>
+                <Link
+                  href="/dashboard"
+                  className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Dashboard
+                </Link>
+                <AuthButton />
+              </div>
+            </nav>
+          </header>
+          <main className="flex-1">{children}</main>
+          <footer className="border-t py-8 text-center text-sm text-muted-foreground">
+            © 2026 ขอให้ Learn — KhoHaiLearn.com
+          </footer>
+        </Providers>
       </body>
     </html>
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import {
   Card,
   CardContent,
@@ -11,7 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
-import { getStats, type PracticeStats } from "@/lib/store";
+import { getStats, getDbStats, type PracticeStats } from "@/lib/store";
 import { categoryLabels, type Category } from "@/lib/problems";
 import {
   BarChart,
@@ -25,11 +26,20 @@ import {
 } from "recharts";
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
   const [stats, setStats] = useState<PracticeStats | null>(null);
 
   useEffect(() => {
-    setStats(getStats());
-  }, []);
+    async function load() {
+      if (session?.user?.email) {
+        const dbStats = await getDbStats();
+        setStats(dbStats ?? getStats()); // DB first, localStorage fallback
+      } else {
+        setStats(getStats());
+      }
+    }
+    load();
+  }, [session]);
 
   if (!stats) return null;
 
